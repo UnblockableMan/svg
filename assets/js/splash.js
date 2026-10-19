@@ -1,6 +1,6 @@
 const splashes = [
   "wsp",
-  "made by x8r",
+  "made by Solum",
   "im hungry",
   "w speed",
   "scramjet > ultraviolet",
@@ -9,7 +9,7 @@ const splashes = [
   "plz star",
   "sock",
   "sdakjlfhaskdfg",
-  "#Canc3rTeam",
+  "#Solum",
   "1 2 skip a few",
   ":broken-heart: :wilted-rose:",
   "canceled due to the rain :(",
