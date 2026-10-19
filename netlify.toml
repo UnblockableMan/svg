@@ -1,0 +1,3 @@
+[build]
+  command = "python3 scripts/build_cloudflare_pages.py"
+  publish = "dist"

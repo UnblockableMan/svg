@@ -1,0 +1,35 @@
+#aurora-effect {
+    position: fixed;
+    inset: -18%;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0;
+    background:
+        radial-gradient(ellipse at 20% 35%, color-mix(in srgb, var(--accent) 45%, transparent), transparent 40%),
+        radial-gradient(ellipse at 75% 28%, color-mix(in srgb, var(--accent-2) 42%, transparent), transparent 38%),
+        radial-gradient(ellipse at 55% 80%, color-mix(in srgb, var(--text) 22%, transparent), transparent 42%);
+    filter: blur(70px);
+    transform: translate3d(0, 0, 0);
+    transition: opacity 500ms ease;
+}
+
+body.aurora-enabled #aurora-effect {
+    opacity: 0.42;
+    animation: aurora-drift 24s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-drift {
+    from {
+        transform: translate3d(-2%, -1%, 0) scale(1);
+    }
+
+    to {
+        transform: translate3d(2%, 1%, 0) scale(1.08);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body.aurora-enabled #aurora-effect {
+        animation: none;
+    }
+}
