@@ -7,6 +7,7 @@ const excluded = new Set([
   '.github',
   '.git',
   'c3.html',
+  'db',
   'dist',
   'index.html',
   'index.svg',
@@ -18,6 +19,7 @@ const excluded = new Set([
   'README.md',
   'scripts',
   'src',
+  'upload',
   'vite.config.js',
 ]);
 
