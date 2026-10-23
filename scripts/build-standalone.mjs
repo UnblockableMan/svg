@@ -7,6 +7,10 @@ const repositoryDirectory = path.resolve(scriptDirectory, '..');
 const sourceDirectory = path.resolve(process.argv[2] ?? path.join(repositoryDirectory, '..', 'canc3r'));
 const hlsVersion = '1.5.18';
 const hlsBaseUrl = `https://cdn.jsdelivr.net/npm/hls.js@${hlsVersion}`;
+const lucideVersion = '0.468.0';
+const lucideBaseUrl = `https://cdn.jsdelivr.net/npm/lucide-static@${lucideVersion}/icons`;
+const particlesBaseUrl = 'https://cdn.jsdelivr.net/npm/particles.js@2.0.0';
+const particlesLicenseUrl = 'https://cdn.jsdelivr.net/gh/VincentGarreau/particles.js@v2.0.0/LICENSE.md';
 
 function toDataUri(contents, mimeType) {
   return `data:${mimeType};base64,${contents.toString('base64')}`;
@@ -73,6 +77,21 @@ async function fetchText(url) {
   return response.text();
 }
 
+async function fetchLucideIcon(name) {
+  const source = await fetchText(`${lucideBaseUrl}/${name}.svg`);
+  if (!/<svg\b/.test(source) || !/<\/svg>/.test(source)) {
+    throw new Error(`Invalid Lucide SVG received for ${name}.`);
+  }
+  return source
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\sclass="lucide lucide-[^"]+"/, '')
+    .replace(/\swidth="24"/, '')
+    .replace(/\sheight="24"/, '')
+    .replace(/<svg\b/, '<svg class="lucide-icon" width="18" height="18" aria-hidden="true" focusable="false"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function replaceExactlyOnce(source, before, after, label) {
   const occurrences = source.split(before).length - 1;
   if (occurrences !== 1) {
@@ -82,18 +101,66 @@ function replaceExactlyOnce(source, before, after, label) {
 }
 
 function xmlSafeMarkup(html) {
-  return html
+  const scripts = [];
+  let markup = html
     .replace(/<!doctype html>\s*/i, '')
     .replace('<html lang="en">', '<html xmlns="http://www.w3.org/1999/xhtml" lang="en">')
+    .replace(/<script>([\s\S]*?)<\/script>/gi, (_, content) => {
+      const marker = `__INLINE_SCRIPT_${scripts.length}__`;
+      scripts.push(content);
+      return marker;
+    })
     .replace(/<(meta|link|img|input|source|br|hr)(\s[^>]*?)?>/gi, '<$1$2 />')
     .replace(/\b(data-close-dialog|controls|playsinline)\b(?!\s*=)/g, '$1=""')
     .replace(/<style>([\s\S]*?)<\/style>/gi, (_, content) => `<style><![CDATA[${content.replaceAll(']]>', ']]]]><![CDATA[>')}]]></style>`)
-    .replace(/<script>([\s\S]*?)<\/script>/gi, (_, content) => `<script><![CDATA[${content.replaceAll(']]>', ']]]]><![CDATA[>')}]]></script>`)
     .replace(/[ \t]+$/gm, '');
+
+  return markup.replace(/__INLINE_SCRIPT_(\d+)__/g, (_, index) => (
+    `<script><![CDATA[${scripts[Number(index)].replaceAll(']]>', ']]]]><![CDATA[>')}]]></script>`
+  ));
 }
 
 const sourceHtml = await readFile(path.join(sourceDirectory, 'index.html'), 'utf8');
 let appScript = await readFile(path.join(sourceDirectory, 'app.js'), 'utf8');
+const lucideNames = {
+  home: 'house',
+  games: 'gamepad-2',
+  apps: 'grid-2x2',
+  movies: 'clapperboard',
+  manga: 'book-open',
+  music: 'music-2',
+  cloud: 'cloud',
+  extensions: 'blocks',
+  settings: 'settings-2',
+  search: 'search',
+  close: 'x',
+};
+const lucideIcons = Object.fromEntries(await Promise.all(Object.entries(lucideNames).map(async ([name, file]) => [
+  name,
+  await fetchLucideIcon(file),
+])));
+lucideIcons.sparkles = await fetchLucideIcon('sparkles');
+const lucideRuntime = `const LUCIDE_ICONS = ${JSON.stringify(lucideIcons)};\n`;
+appScript = `${lucideRuntime}${appScript}`;
+
+appScript = replaceExactlyOnce(
+  appScript,
+  'const THEMES = {\n  c3: "C3 Pink",',
+  'const THEMES = {\n  black: "Black",\n  white: "White",\n  c3: "C3 Pink",',
+  'black and white theme options',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'const fallback = { theme: "c3", fog: true, aurora: false };',
+  'const fallback = { theme: "black", fog: false, aurora: false };',
+  'default black theme',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'theme: Object.hasOwn(THEMES, stored.theme) ? stored.theme : fallback.theme,',
+  'theme: Object.hasOwn(THEMES, stored.theme) ? (stored.theme === "c3" ? "black" : stored.theme) : fallback.theme,',
+  'legacy theme migration',
+);
 const baseCssPath = path.join(sourceDirectory, 'style.css');
 const baseCss = await inlineCssUrls(await readFile(baseCssPath, 'utf8'), baseCssPath);
 const effectsCss = (await readFile(path.join(sourceDirectory, 'assets/css/effects.css'), 'utf8')).replace(/[ \t]+$/gm, '');
@@ -107,6 +174,46 @@ const themeCss = await Promise.all(supportedThemes.map(async (theme) => {
 const htmlMatch = sourceHtml.match(/<html lang="en">([\s\S]*?)<\/html>/i);
 if (!htmlMatch) throw new Error('Could not find the C3 HTML document.');
 let html = `<!doctype html>\n<html lang="en">${htmlMatch[1]}</html>`;
+const navIconNames = {
+  '⌂': 'home',
+  '✣': 'games',
+  '▦': 'apps',
+  '▣': 'movies',
+  '▤': 'manga',
+  '♫': 'music',
+  '⌁': 'cloud',
+  '⊞': 'extensions',
+  '⚙': 'settings',
+};
+for (const [symbol, name] of Object.entries(navIconNames)) {
+  html = replaceExactlyOnce(
+    html,
+    `<span class="nav-icon">${symbol}</span>`,
+    `<span class="nav-icon">${lucideIcons[name]}</span>`,
+    `${name} Lucide navigation icon`,
+  );
+}
+html = replaceExactlyOnce(
+  html,
+  '<span aria-hidden="true">⌕</span>',
+  lucideIcons.search,
+  'Lucide search icon',
+);
+html = replaceExactlyOnce(
+  html,
+  '<button class="icon-button" id="settings-shortcut" aria-label="Open settings" title="Settings">⚙</button>',
+  `<button class="icon-button" id="settings-shortcut" aria-label="Open settings" title="Settings">${lucideIcons.settings}</button>`,
+  'Lucide settings shortcut',
+);
+if (html.split('>×</button>').length - 1 !== 2) {
+  throw new Error('Expected two close buttons for Lucide icons.');
+}
+html = html.replaceAll('>×</button>', `>${lucideIcons.close}</button>`);
+html = html.replace('<body>', '<body data-theme="black">');
+html = html.replace(
+  '<div id="fog-effect" aria-hidden="true"></div>',
+  '<div id="particles-js" aria-hidden="true"></div>\n    <div id="fog-effect" aria-hidden="true"></div>',
+);
 const iconUri = await assetDataUri('image.png');
 const imageNames = [...new Set([...appScript.matchAll(/image: "([^"]+)"/g)].map((match) => match[1]))];
 const appImages = Object.fromEntries(await Promise.all(imageNames.map(async (name) => [
@@ -115,6 +222,28 @@ const appImages = Object.fromEntries(await Promise.all(imageNames.map(async (nam
 ])));
 const appImageLookup = `const APP_IMAGES = ${JSON.stringify(appImages)};\nfunction appImage(name) { return APP_IMAGES[name] || ""; }\n`;
 appScript = replaceExactlyOnce(appScript, 'const APP_CATALOG = [', `${appImageLookup}const APP_CATALOG = [`, 'app image catalog');
+const featureIconNames = {
+  '✣': 'games',
+  '▣': 'movies',
+  '▤': 'manga',
+  '♫': 'music',
+  '⌁': 'cloud',
+  '⊞': 'extensions',
+};
+for (const [symbol, name] of Object.entries(featureIconNames)) {
+  appScript = replaceExactlyOnce(
+    appScript,
+    `<span class="feature-icon">${symbol}</span>`,
+    `<span class="feature-icon">${lucideIcons[name]}</span>`,
+    `${name} Lucide feature icon`,
+  );
+}
+appScript = replaceExactlyOnce(
+  appScript,
+  '<button class="icon-button dialog-close" aria-label="Close game">×</button>',
+  `<button class="icon-button dialog-close" aria-label="Close game">${lucideIcons.close}</button>`,
+  'Lucide game-dialog close icon',
+);
 const oldAppImageTemplate = 'src="assets/img/apps/${app.image}"';
 const newAppImageTemplate = 'src="${appImage(app.image)}"';
 if (appScript.split(oldAppImageTemplate).length - 1 !== 2) {
@@ -136,7 +265,7 @@ const oldThemeFunction = `function applyAppearance() {
   document.body.dataset.theme = selectedTheme;
 }`;
 const newThemeFunction = `function applyAppearance() {
-  const selectedTheme = Object.hasOwn(THEMES, state.appearance.theme) ? state.appearance.theme : "c3";
+  const selectedTheme = Object.hasOwn(THEMES, state.appearance.theme) ? state.appearance.theme : "black";
   document.body.classList.toggle("fog-enabled", state.appearance.fog);
   document.body.classList.toggle("aurora-enabled", state.appearance.aurora);
   document.body.dataset.theme = selectedTheme;
@@ -195,10 +324,110 @@ body {
 
 body::before {
   background-image:
-    linear-gradient(#c4d0ff08 1px, transparent 1px),
-    linear-gradient(90deg, #c4d0ff08 1px, transparent 1px);
-  background-size: 48px 48px;
-  opacity: .34;
+    linear-gradient(#c4d0ff0c 1px, transparent 1px),
+    linear-gradient(90deg, #c4d0ff0c 1px, transparent 1px);
+  background-size: 36px 36px;
+  opacity: .45;
+}
+
+body[data-theme="black"] {
+  color-scheme: dark;
+  --bg: #090b12;
+  --bg-2: #10141f;
+  --bg-3: #151b29;
+  --bg-4: #1b2232;
+  --bg-5: #080a10;
+  --border: #ffffff20;
+  --border-2: #ffffff17;
+  --border-3: #ffffff10;
+  --border-4: #ffffff0b;
+  --text: #a6adbd;
+  --bright-text: #f4f5fb;
+  --accent: #aebeff;
+  --accent-2: #ed9ed5;
+  --panel: #10141f;
+  --panel-raised: #151b29;
+  --panel-hover: #1b2232;
+  --line: #ffffff17;
+  --white: #f4f5fb;
+  --muted: #9299aa;
+  --pink: #aebeff;
+  --pink-light: #d4dcff;
+}
+
+body[data-theme="white"] {
+  color-scheme: light;
+  --bg: #f7f8fc;
+  --bg-2: #ffffff;
+  --bg-3: #f0f2f8;
+  --bg-4: #e8ebf4;
+  --bg-5: #f1f2f7;
+  --border: #171a2430;
+  --border-2: #171a2425;
+  --border-3: #171a2418;
+  --border-4: #171a2410;
+  --text: #5f6471;
+  --bright-text: #171a24;
+  --accent: #5969b8;
+  --accent-2: #a94d91;
+  --panel: #ffffff;
+  --panel-raised: #f5f6fb;
+  --panel-hover: #edf0f8;
+  --line: #1619251b;
+  --white: #171a24;
+  --muted: #626979;
+  --pink: #5969b8;
+  --pink-light: #515f9f;
+  background:
+    radial-gradient(ellipse at 78% 0%, #8d9df222, transparent 38%),
+    radial-gradient(ellipse at 18% 90%, #d88acb18, transparent 42%),
+    #f7f8fc;
+  color: #171a24;
+}
+
+body[data-theme="white"]::before {
+  background-image:
+    linear-gradient(#252b4210 1px, transparent 1px),
+    linear-gradient(90deg, #252b4210 1px, transparent 1px);
+  opacity: .55;
+}
+
+#particles-js {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+#particles-js canvas {
+  display: block;
+  opacity: .42;
+}
+
+body[data-theme="white"] #particles-js canvas {
+  filter: invert(1);
+  opacity: .18;
+}
+
+.lucide-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.nav-icon .lucide-icon {
+  width: 19px;
+  height: 19px;
+}
+
+.global-search > .lucide-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
 }
 
 .main-area {
@@ -293,6 +522,10 @@ body::before {
   font-weight: 700;
 }
 
+.nav-item.active .lucide-icon {
+  color: #171625;
+}
+
 .nav-icon {
   width: 20px;
   font-size: 17px;
@@ -346,6 +579,188 @@ body::before {
     radial-gradient(ellipse at 72% 100%, #ed8fd41a, transparent 40%),
     linear-gradient(125deg, #171b2b, #10131d 65%);
   box-shadow: inset 0 1px #ffffff0c, 0 20px 65px #0004;
+}
+
+body[data-theme="white"] .topbar {
+  border-color: #252b421c;
+  background:
+    radial-gradient(ellipse at 0 0, #8d9df216, transparent 48%),
+    linear-gradient(180deg, #ffffffed, #f6f7fced);
+  box-shadow: 0 20px 60px #28345a12, inset 0 1px #ffffff;
+}
+
+body[data-theme="white"] .nav-item {
+  color: #596071;
+}
+
+body[data-theme="white"] .nav-item:hover {
+  border-color: #20263a12;
+  background: #323b5810;
+  color: #181b26;
+}
+
+body[data-theme="white"] .nav-item.active {
+  border-color: #707fca4d;
+  background: linear-gradient(110deg, #cad3ff, #f2c6e4);
+  box-shadow: 0 6px 20px #7182ce26, inset 0 1px #ffffffb8;
+  color: #171625;
+}
+
+body[data-theme="white"] .global-search,
+body[data-theme="white"] .icon-button,
+body[data-theme="white"] .search-form input,
+body[data-theme="white"] .field input,
+body[data-theme="white"] .field select,
+body[data-theme="white"] .pill-tabs {
+  border-color: #20263a20;
+  background: #ffffffd9;
+  color: #252a38;
+}
+
+body[data-theme="white"] .global-search input,
+body[data-theme="white"] .search-form input,
+body[data-theme="white"] .field input,
+body[data-theme="white"] .field select {
+  color: #252a38;
+}
+
+body[data-theme="white"] .global-search input::placeholder,
+body[data-theme="white"] .search-form input::placeholder,
+body[data-theme="white"] .field input::placeholder {
+  color: #777e8e;
+}
+
+body[data-theme="white"] .breadcrumb,
+body[data-theme="white"] .breadcrumb strong {
+  color: #626979;
+}
+
+body[data-theme="white"] .hero {
+  border-color: #717fc933;
+  background:
+    radial-gradient(ellipse at 82% 8%, #a7b8ff3b, transparent 35%),
+    radial-gradient(ellipse at 72% 100%, #ed9ed52a, transparent 40%),
+    linear-gradient(125deg, #ffffff, #f0f2f9 70%);
+  box-shadow: inset 0 1px #ffffff, 0 20px 55px #28345a14;
+}
+
+body[data-theme="white"] .hero p,
+body[data-theme="white"] .content-heading p,
+body[data-theme="white"] .section-heading p,
+body[data-theme="white"] .feature-card p,
+body[data-theme="white"] .extension-banner p,
+body[data-theme="white"] .media-card p {
+  color: #646b7c;
+}
+
+body[data-theme="white"] .feature-card,
+body[data-theme="white"] .settings-card,
+body[data-theme="white"] .app-card,
+body[data-theme="white"] .media-card,
+body[data-theme="white"] .quick-app,
+body[data-theme="white"] .chapter-button,
+body[data-theme="white"] .extension-banner {
+  border-color: #20263a1b;
+  background: linear-gradient(145deg, #ffffff, #f1f3f9);
+  box-shadow: inset 0 1px #ffffff;
+  color: #252a38;
+}
+
+body[data-theme="white"] .feature-card:hover,
+body[data-theme="white"] .app-card:hover {
+  border-color: #6473bb6b;
+  background: linear-gradient(145deg, #ffffff, #e9edf9);
+  box-shadow: 0 12px 28px #28345a18, inset 0 1px #ffffff;
+}
+
+body[data-theme="white"] .feature-card h3,
+body[data-theme="white"] .media-card h3,
+body[data-theme="white"] .settings-card h2,
+body[data-theme="white"] .extension-banner h2 {
+  color: #202434;
+}
+
+body[data-theme="white"] .app-card-category,
+body[data-theme="white"] .app-card-open,
+body[data-theme="white"] .small-note,
+body[data-theme="white"] .footer {
+  color: #687083;
+}
+
+body[data-theme="white"] .media-art,
+body[data-theme="white"] .empty-state {
+  border-color: #252b421c;
+  background: linear-gradient(135deg, #eef0f7, #e5e8f1);
+  color: #606b9e;
+}
+
+body[data-theme="white"] .notice {
+  border-color: #7785c333;
+  background: linear-gradient(105deg, #7785c311, #d88acb0d);
+  color: #4d5363;
+}
+
+body[data-theme="white"] .notice strong,
+body[data-theme="white"] .notice .notice-mark {
+  color: #515f9f;
+}
+
+body[data-theme="white"] .button {
+  border-color: #252b4226;
+  background: #ffffff;
+  color: #272c3a;
+}
+
+body[data-theme="white"] .button:hover {
+  border-color: #7785c366;
+  background: #f0f2fa;
+}
+
+body[data-theme="white"] .button.primary {
+  border-color: #6878c877;
+  background: linear-gradient(110deg, #c1ccff, #edc0df);
+  color: #202236;
+}
+
+body[data-theme="white"] dialog {
+  border-color: #252b4226;
+  background: #f9faff;
+  color: #202434;
+  box-shadow: 0 24px 90px #20243c40;
+}
+
+body[data-theme="white"] dialog::backdrop {
+  background: #25283d66;
+}
+
+body[data-theme="white"] .audio-dock,
+body[data-theme="white"] .toast {
+  border-color: #252b4226;
+  background: #ffffffed;
+  color: #202434;
+  box-shadow: 0 16px 50px #20243c26;
+}
+
+body[data-theme="white"] .empty-state strong,
+body[data-theme="white"] .toggle-row strong {
+  color: #202434;
+}
+
+body[data-theme="white"] .toggle-row {
+  border-color: #252b4218;
+}
+
+body[data-theme="white"] .toggle-switch {
+  border-color: #252b4233;
+  background: #e4e7ef;
+}
+
+body[data-theme="white"] .toggle-switch::after {
+  background: #737b8e;
+}
+
+body[data-theme="white"] .toggle-row input:checked + .toggle-switch::after {
+  background: #515f9f;
 }
 
 .hero::after {
@@ -620,6 +1035,12 @@ dialog {
     font-size: 9px;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  #particles-js {
+    display: none;
+  }
+}
 `;
 const bundledCss = `${css}\n${standaloneCss}`;
 html = html.replace(/<link id="theme-stylesheet"[^>]*>\s*/i, '');
@@ -632,7 +1053,46 @@ if (!hlsResponse.ok) {
 }
 const hlsScript = (await hlsResponse.text()).replace(/^\/\/# sourceMappingURL=.*$/m, '');
 const hlsLicense = await fetchText(`${hlsBaseUrl}/LICENSE`);
-const runtimeScript = `/* HLS.js ${hlsVersion}, Apache-2.0 license:\n${hlsLicense.replaceAll('*/', '* /')}\n*/\n${hlsScript}\n${appScript}`;
+const particlesResponse = await fetch(`${particlesBaseUrl}/particles.min.js`);
+if (!particlesResponse.ok) {
+  throw new Error(`Unable to download the Velara particle library: HTTP ${particlesResponse.status}`);
+}
+const particlesScript = (await particlesResponse.text()).replace(/^\/\/# sourceMappingURL=.*$/m, '');
+const particlesLicense = await fetchText(particlesLicenseUrl);
+const lucideLicense = await fetchText(`https://cdn.jsdelivr.net/npm/lucide-static@${lucideVersion}/LICENSE`);
+const particlesConfig = await readFile(path.join(repositoryDirectory, 'velara-particles.js'), 'utf8');
+const xhtmlDomCompatibility = `
+if (!document.body) {
+  const xhtmlNamespace = "http://www.w3.org/1999/xhtml";
+  const embeddedBody = document.querySelector("foreignObject body");
+  const embeddedHead = document.querySelector("foreignObject head");
+  if (!embeddedBody || !embeddedHead) {
+    throw new Error("The standalone SVG is missing its embedded HTML document.");
+  }
+  Object.defineProperty(document, "body", { configurable: true, get: () => embeddedBody });
+  Object.defineProperty(document, "head", { configurable: true, get: () => embeddedHead });
+  document.createElement = (name) => document.createElementNS(xhtmlNamespace, name);
+  const innerHTML = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+  if (!innerHTML?.get || !innerHTML.set) {
+    throw new Error("The standalone SVG browser does not support HTML template rendering.");
+  }
+  Object.defineProperty(Element.prototype, "innerHTML", {
+    configurable: true,
+    get() {
+      return innerHTML.get.call(this);
+    },
+    set(markup) {
+      if (this.namespaceURI !== xhtmlNamespace) {
+        innerHTML.set.call(this, markup);
+        return;
+      }
+      const parsedDocument = new DOMParser().parseFromString(String(markup), "text/html");
+      this.replaceChildren(...Array.from(parsedDocument.body.childNodes, (node) => document.importNode(node, true)));
+    },
+  });
+}
+`;
+const runtimeScript = `/* HLS.js ${hlsVersion}, Apache-2.0 license:\n${hlsLicense.replaceAll('*/', '* /')}\n*/\n/* Lucide ${lucideVersion}, ISC license:\n${lucideLicense.replaceAll('*/', '* /')}\n*/\n/* particles.js v2.0.0, MIT license:\n${particlesLicense.replaceAll('*/', '* /')}\n*/\n${xhtmlDomCompatibility}\n${particlesScript}\n${particlesConfig}\n${appScript}`;
 if (/<\/script/i.test(runtimeScript)) {
   throw new Error('Runtime source contains a closing script tag and cannot be safely inlined.');
 }
