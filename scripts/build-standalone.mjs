@@ -145,6 +145,12 @@ appScript = `${lucideRuntime}${appScript}`;
 
 appScript = replaceExactlyOnce(
   appScript,
+  'const GAME_INDEX = "https://cdn.jsdelivr.net/gh/gmshelf/seraph/seraph.json";\nconst GAME_CDN = "https://cdn.jsdelivr.net/gh/gmshelf/seraph/";',
+  'const DEFAULT_GAME_INDEX = "https://cdn.jsdelivr.net/gh/gmshelf/seraph/seraph.json";\nconst DEFAULT_GAME_BASE = "https://cdn.jsdelivr.net/gh/gmshelf/seraph/";',
+  'default remote game sources',
+);
+appScript = replaceExactlyOnce(
+  appScript,
   'const THEMES = {\n  c3: "C3 Pink",',
   'const THEMES = {\n  black: "Black",\n  white: "White",\n  c3: "C3 Pink",',
   'black and white theme options',
@@ -161,6 +167,228 @@ appScript = replaceExactlyOnce(
   'theme: Object.hasOwn(THEMES, stored.theme) ? (stored.theme === "c3" ? "black" : stored.theme) : fallback.theme,',
   'legacy theme migration',
 );
+appScript = replaceExactlyOnce(
+  appScript,
+  `function normalizeBase(value) {
+  return String(value || "").trim().replace(/\\/+$/, "");
+}`,
+  `function normalizeBase(value) {
+  return String(value || "").trim().replace(/\\/+$/, "");
+}
+
+function normalizeRemoteUrl(value, label, directory = false) {
+  const input = String(value || "").trim();
+  if (!input) return "";
+  let url;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new Error(\`\${label} must be a valid URL.\`);
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error(\`\${label} must use HTTP or HTTPS.\`);
+  }
+  if (directory) {
+    if (url.search || url.hash) throw new Error(\`\${label} must not include a query or fragment.\`);
+    if (!url.pathname.endsWith("/")) url.pathname += "/";
+  }
+  return url.href;
+}`,
+  'HTTP(S) remote file URL validation',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `      music: normalizeBase(stored.music || ""),
+    };`,
+  `      music: normalizeBase(stored.music || ""),
+      gameIndex: normalizeRemoteUrl(stored.gameIndex || DEFAULT_GAME_INDEX, "Games JSON URL"),
+      gameBase: normalizeRemoteUrl(stored.gameBase || DEFAULT_GAME_BASE, "Game files URL", true),
+      stylesheet: normalizeRemoteUrl(stored.stylesheet || "", "Custom CSS URL"),
+    };`,
+  'saved remote file sources',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'return { manga: "", movies: "", music: "" };',
+  'return { manga: "", movies: "", music: "", gameIndex: DEFAULT_GAME_INDEX, gameBase: DEFAULT_GAME_BASE, stylesheet: "" };',
+  'remote source defaults after settings read failure',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'fetch(GAME_INDEX)',
+  'fetch(state.config.gameIndex || DEFAULT_GAME_INDEX)',
+  'configurable games JSON request',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'new URL(cleanPath, GAME_CDN)',
+  'new URL(cleanPath, state.config.gameBase || DEFAULT_GAME_BASE)',
+  'configurable game file base',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'new URL(GAME_CDN).origin',
+  'new URL(state.config.gameBase || DEFAULT_GAME_BASE).origin',
+  'configured game origin validation',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'function applyAppearance() {',
+  `function applyCustomStylesheet() {
+  let stylesheet = document.querySelector("#c3-custom-stylesheet");
+  if (!state.config.stylesheet) {
+    stylesheet?.remove();
+    return;
+  }
+  if (!stylesheet) {
+    stylesheet = document.createElement("link");
+    stylesheet.id = "c3-custom-stylesheet";
+    stylesheet.rel = "stylesheet";
+    stylesheet.addEventListener("error", () => {
+      console.error("Unable to load the configured custom stylesheet.", state.config.stylesheet);
+      showToast("Could not load the custom stylesheet. Check the URL and its availability.");
+    });
+    stylesheet.href = state.config.stylesheet;
+    document.head.append(stylesheet);
+    return;
+  }
+  if (stylesheet.href !== state.config.stylesheet) stylesheet.href = state.config.stylesheet;
+}
+
+function applyAppearance() {`,
+  'optional remote stylesheet loader',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'A hand-picked index from Seraph. Game covers are placeholders in the upstream collection, so the cards keep it clean and simple.',
+  'Load a remote JSON catalog and its hosted game files. You can change both sources in Settings.',
+  'configurable remote games description',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'Loading the Seraph collection…',
+  'Loading the game catalog…',
+  'generic games loading message',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  '<p>Seraph collection</p>',
+  '<p>Game collection</p>',
+  'generic game card label',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'Browse the Seraph collection, powered by GMShelf.',
+  'Browse games from your configured catalog.',
+  'generic game feature description',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  '<span class="pill">GMShelf · Seraph</span>',
+  '<span class="pill">Remote catalog</span>',
+  'generic game source badge',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'Unable to load Seraph games.',
+  'Unable to load the configured game catalog.',
+  'generic game catalog error log',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'That game link is outside the Seraph collection.',
+  'That game link is outside the configured game host.',
+  'configured game host error',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `sectionHeader("PREFERENCES", "Settings", "Connect self-hosted APIs. Service URLs are stored in this browser only; no API secrets are stored here.")`,
+  `sectionHeader("PREFERENCES", "Settings", "Configure remote game files, an optional stylesheet, and self-hosted media APIs. These URLs are saved in this browser.")`,
+  'remote asset settings description',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `        <div class="settings-actions"><button class="button primary" type="submit">Save connections</button><button class="button" type="button" data-clear-config>Clear</button></div>
+      </section>
+      <section class="settings-card setup-card">`,
+  `        <div class="settings-actions"><button class="button primary" type="submit">Save settings</button><button class="button" type="button" data-clear-config>Reset</button></div>
+      </section>
+      <section class="settings-card"><span class="eyebrow">REMOTE FILES</span><h2>Game catalog &amp; custom CSS</h2><p>Load a JSON game list and game pages from your own host, or add a remote stylesheet to customize the embedded design. Remote files must allow access from this page where the browser requires it.</p>
+        \${settingField("gameIndex", "Games JSON URL", "https://example.com/games.json")}
+        \${settingField("gameBase", "Game files base URL", "https://example.com/games/")}
+        \${settingField("stylesheet", "Optional CSS URL", "https://example.com/theme.css")}
+        <p class="small-note">Game pages and their JavaScript run in the game frame, not in the C3 app. Only use sources you trust.</p>
+      </section>
+      <section class="settings-card setup-card">`,
+  'remote file settings',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `Game listings load directly from <a href="https://github.com/gmshelf/seraph" target="_blank" rel="noreferrer">GMShelf's Seraph index</a>.`,
+  `The default game catalog and files load from <a href="https://github.com/gmshelf/seraph" target="_blank" rel="noreferrer">GMShelf's Seraph index</a>; you can use different sources above.`,
+  'configurable remote source notice',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `      state.config = { manga: "", movies: "", music: "" };
+      renderSettings();
+      showToast("Saved API connections cleared.");`,
+  `      state.config = { manga: "", movies: "", music: "", gameIndex: DEFAULT_GAME_INDEX, gameBase: DEFAULT_GAME_BASE, stylesheet: "" };
+      state.games = [];
+      state.gameError = "";
+      applyCustomStylesheet();
+      renderSettings();
+      if (state.view === "games") loadGames();
+      showToast("Saved settings reset to defaults.");`,
+  'remote settings reset',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `    const next = Object.fromEntries(["manga", "movies", "music"].map((key) => [key, normalizeBase(formData.get(key))]));
+    for (const [key, value] of Object.entries(next)) {
+      if (value && !/^https?:\\/\\//i.test(value)) {
+        showToast(\`\${key} API URL must start with http:// or https://.\`);
+        return;
+      }
+    }`,
+  `    let next;
+    try {
+      next = {
+        ...Object.fromEntries(["manga", "movies", "music"].map((key) => [key, normalizeBase(formData.get(key))])),
+        gameIndex: normalizeRemoteUrl(formData.get("gameIndex") || DEFAULT_GAME_INDEX, "Games JSON URL"),
+        gameBase: normalizeRemoteUrl(formData.get("gameBase") || DEFAULT_GAME_BASE, "Game files base URL", true),
+        stylesheet: normalizeRemoteUrl(formData.get("stylesheet"), "Optional CSS URL"),
+      };
+      for (const key of ["manga", "movies", "music"]) {
+        if (next[key] && !/^https?:\\/\\//i.test(next[key])) {
+          showToast(\`\${key} API URL must start with http:// or https://.\`);
+          return;
+        }
+      }
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }`,
+  'remote asset URL validation on save',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `      state.config = next;
+      showToast("API connections saved in this browser.");`,
+  `      state.config = next;
+      state.games = [];
+      state.gameError = "";
+      applyCustomStylesheet();
+      if (state.view === "games") loadGames();
+      showToast("Settings saved in this browser.");`,
+  'remote source configuration update',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'applyAppearance();\nsetView(views[initialView] ? initialView : "home");',
+  'applyAppearance();\napplyCustomStylesheet();\nsetView(views[initialView] ? initialView : "home");',
+  'initial optional stylesheet load',
+);
 const baseCssPath = path.join(sourceDirectory, 'style.css');
 const baseCss = await inlineCssUrls(await readFile(baseCssPath, 'utf8'), baseCssPath);
 const effectsCss = (await readFile(path.join(sourceDirectory, 'assets/css/effects.css'), 'utf8')).replace(/[ \t]+$/gm, '');
@@ -174,6 +402,12 @@ const themeCss = await Promise.all(supportedThemes.map(async (theme) => {
 const htmlMatch = sourceHtml.match(/<html lang="en">([\s\S]*?)<\/html>/i);
 if (!htmlMatch) throw new Error('Could not find the C3 HTML document.');
 let html = `<!doctype html>\n<html lang="en">${htmlMatch[1]}</html>`;
+html = replaceExactlyOnce(
+  html,
+  '<span>Games by <a href="https://github.com/gmshelf/seraph" target="_blank" rel="noreferrer">GMShelf / Seraph</a></span>',
+  '<span>Games from your configured catalog</span>',
+  'generic game source footer',
+);
 const navIconNames = {
   '⌂': 'home',
   '✣': 'games',
