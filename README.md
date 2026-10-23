@@ -17,6 +17,16 @@ npm run dev
 npm run build
 ```
 
+## CDN
+
+The C3 app wrapper is available through jsDelivr once this repository is pushed
+to GitHub:
+
+`https://cdn.jsdelivr.net/gh/UnblockableMan/svg@main/index.svg`
+
+jsDelivr serves public GitHub files directly, so no separate registration is
+needed.
+
 The embedded C3 app and its static assets are based on
 [UnblockableMan/canc3r](https://github.com/UnblockableMan/canc3r). The original
 SVG loader is based on [cherriunblocked/svg](https://github.com/cherriunblocked/svg).
