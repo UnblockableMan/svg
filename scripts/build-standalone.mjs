@@ -128,6 +128,8 @@ const lucideNames = {
   apps: 'grid-2x2',
   movies: 'clapperboard',
   manga: 'book-open',
+  anime: 'tv',
+  browser: 'globe',
   music: 'music-2',
   cloud: 'cloud',
   extensions: 'blocks',
@@ -158,14 +160,44 @@ appScript = replaceExactlyOnce(
 appScript = replaceExactlyOnce(
   appScript,
   'const fallback = { theme: "c3", fog: true, aurora: false };',
-  'const fallback = { theme: "black", fog: false, aurora: false };',
+  'const fallback = { theme: "black", fog: true, aurora: true, grid: true, particles: true };',
   'default black theme',
 );
 appScript = replaceExactlyOnce(
   appScript,
-  'theme: Object.hasOwn(THEMES, stored.theme) ? stored.theme : fallback.theme,',
-  'theme: Object.hasOwn(THEMES, stored.theme) ? (stored.theme === "c3" ? "black" : stored.theme) : fallback.theme,',
-  'legacy theme migration',
+  `      aurora: typeof stored.aurora === "boolean" ? stored.aurora : fallback.aurora,
+    };`,
+  `      aurora: typeof stored.aurora === "boolean" ? stored.aurora : fallback.aurora,
+      grid: typeof stored.grid === "boolean" ? stored.grid : fallback.grid,
+      particles: typeof stored.particles === "boolean" ? stored.particles : fallback.particles,
+    };`,
+  'saved background effect preferences',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `<label class="toggle-row" for="fog-toggle"><span><strong>Soft fog</strong><small>Slow drifting mist around the edges</small></span><input id="fog-toggle" type="checkbox" name="fog"><span class="toggle-switch" aria-hidden="true"></span></label>
+        <label class="toggle-row" for="aurora-toggle"><span><strong>Aurora glow</strong><small>Use the retained ambient aurora effect</small></span><input id="aurora-toggle" type="checkbox" name="aurora"><span class="toggle-switch" aria-hidden="true"></span></label>`,
+  `<label class="toggle-row" for="grid-toggle"><span><strong>Blueprint grid</strong><small>Fine grid with a soft fade at the edges</small></span><input id="grid-toggle" type="checkbox" name="grid"><span class="toggle-switch" aria-hidden="true"></span></label>
+        <label class="toggle-row" for="fog-toggle"><span><strong>Drifting fog</strong><small>Slow, layered haze behind the interface</small></span><input id="fog-toggle" type="checkbox" name="fog"><span class="toggle-switch" aria-hidden="true"></span></label>
+        <label class="toggle-row" for="aurora-toggle"><span><strong>Aurora glow</strong><small>Soft animated color wash</small></span><input id="aurora-toggle" type="checkbox" name="aurora"><span class="toggle-switch" aria-hidden="true"></span></label>
+        <label class="toggle-row" for="particles-toggle"><span><strong>Floating particles</strong><small>Subtle ambient motion</small></span><input id="particles-toggle" type="checkbox" name="particles"><span class="toggle-switch" aria-hidden="true"></span></label>`,
+  'independent background effect toggles',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `  document.querySelector("#fog-toggle").checked = state.appearance.fog;
+  document.querySelector("#aurora-toggle").checked = state.appearance.aurora;`,
+  `  document.querySelector("#grid-toggle").checked = state.appearance.grid;
+  document.querySelector("#fog-toggle").checked = state.appearance.fog;
+  document.querySelector("#aurora-toggle").checked = state.appearance.aurora;
+  document.querySelector("#particles-toggle").checked = state.appearance.particles;`,
+  'background effect toggle state',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  'event.target.id === "fog-toggle" || event.target.id === "aurora-toggle"',
+  '["grid-toggle", "fog-toggle", "aurora-toggle", "particles-toggle"].includes(event.target.id)',
+  'independent ambient effect change handling',
 );
 appScript = replaceExactlyOnce(
   appScript,
@@ -230,6 +262,75 @@ appScript = replaceExactlyOnce(
   'new URL(GAME_CDN).origin',
   'new URL(state.config.gameBase || DEFAULT_GAME_BASE).origin',
   'configured game origin validation',
+);
+const gameLauncherPattern = /function launchGame\(url, name\) \{[\s\S]*?\n\}(?=\n\nfunction renderMovies\()/g;
+const gameLauncherMatches = [...appScript.matchAll(gameLauncherPattern)];
+if (gameLauncherMatches.length !== 1) {
+  throw new Error(`Expected one game launcher, found ${gameLauncherMatches.length}.`);
+}
+const gameLauncher = `async function launchGame(url, name) {
+  let safeUrl;
+  try {
+    safeUrl = new URL(url);
+    if (safeUrl.origin !== new URL(state.config.gameBase || DEFAULT_GAME_BASE).origin) {
+      throw new Error("That game link is outside the Seraph collection.");
+    }
+  } catch (error) {
+    showToast(error.message || "That game link is invalid.");
+    return;
+  }
+
+  const dialog = document.createElement("dialog");
+  dialog.className = "player-dialog game-dialog";
+  dialog.innerHTML = \`<div class="dialog-top"><div><span class="eyebrow">SERAPH · GMSHELF</span><h2>\${escapeHTML(name)}</h2></div><button class="icon-button dialog-close" aria-label="Close game">×</button></div><p class="game-loading" role="status">Loading game…</p><iframe class="game-frame" title="\${escapeHTML(name)}" sandbox="allow-scripts allow-forms allow-pointer-lock allow-modals allow-downloads" allow="fullscreen; autoplay; gamepad" allowfullscreen></iframe>\`;
+  const frame = dialog.querySelector(".game-frame");
+  const status = dialog.querySelector(".game-loading");
+  const controller = new AbortController();
+  let closed = false;
+  let gameBlobUrl = "";
+
+  dialog.querySelector(".dialog-close").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    closed = true;
+    controller.abort();
+    frame.src = "about:blank";
+    if (gameBlobUrl) URL.revokeObjectURL(gameBlobUrl);
+    dialog.remove();
+  }, { once: true });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+
+  try {
+    const response = await fetch(safeUrl.href, { headers: { Accept: "text/html" }, signal: controller.signal });
+    if (!response.ok) throw new Error(\`Game file returned HTTP \${response.status}.\`);
+    const source = await response.text();
+    if (closed) return;
+    const baseTag = \`<base href="\${escapeHTML(safeUrl.href)}">\`;
+    const documentHtml = /<head\\b[^>]*>/i.test(source)
+      ? source.replace(/<head\\b[^>]*>/i, (head) => \`\${head}\${baseTag}\`)
+      : \`<!doctype html><html><head>\${baseTag}</head><body>\${source}</body></html>\`;
+    gameBlobUrl = URL.createObjectURL(new Blob([documentHtml], { type: "text/html" }));
+    frame.src = gameBlobUrl;
+    status.hidden = true;
+  } catch (error) {
+    if (closed) return;
+    status.textContent = \`Could not load this game: \${error.message || "Unknown error"} Check that the game host allows browser requests.\`;
+    console.error("Unable to load game HTML.", error);
+  }
+}`;
+appScript = replaceExactlyOnce(appScript, gameLauncherMatches[0][0], gameLauncher, 'sandboxed game HTML loader');
+appScript = replaceExactlyOnce(
+  appScript,
+  `  manga: "Manga",
+  music: "Music",`,
+  `  manga: "Manga",
+  anime: "Anime",
+  browser: "Browser",
+  music: "Music",`,
+  'Anime and Browser view labels',
 );
 appScript = replaceExactlyOnce(
   appScript,
@@ -408,12 +509,20 @@ html = replaceExactlyOnce(
   '<span>Games from your configured catalog</span>',
   'generic game source footer',
 );
+html = replaceExactlyOnce(
+  html,
+  '<button class="nav-item" data-view="manga"><span class="nav-icon">▤</span>Manga</button>',
+  '<button class="nav-item" data-view="manga"><span class="nav-icon">▤</span>Manga</button>\n            <button class="nav-item" data-view="anime"><span class="nav-icon">◈</span>Anime</button>\n            <button class="nav-item" data-view="browser"><span class="nav-icon">◎</span>Browser</button>',
+  'Anime and Browser navigation',
+);
 const navIconNames = {
   '⌂': 'home',
   '✣': 'games',
   '▦': 'apps',
   '▣': 'movies',
   '▤': 'manga',
+  '◈': 'anime',
+  '◎': 'browser',
   '♫': 'music',
   '⌁': 'cloud',
   '⊞': 'extensions',
@@ -500,11 +609,185 @@ const oldThemeFunction = `function applyAppearance() {
 }`;
 const newThemeFunction = `function applyAppearance() {
   const selectedTheme = Object.hasOwn(THEMES, state.appearance.theme) ? state.appearance.theme : "black";
+  document.body.classList.toggle("grid-enabled", state.appearance.grid);
   document.body.classList.toggle("fog-enabled", state.appearance.fog);
   document.body.classList.toggle("aurora-enabled", state.appearance.aurora);
+  document.body.classList.toggle("particles-enabled", state.appearance.particles);
   document.body.dataset.theme = selectedTheme;
 }`;
 appScript = replaceExactlyOnce(appScript, oldThemeFunction, newThemeFunction, 'theme switcher');
+const homeFunctionPattern = /function renderHome\(\) \{[\s\S]*?\n\}(?=\n\nfunction renderApps\()/g;
+const homeFunctionMatches = [...appScript.matchAll(homeFunctionPattern)];
+if (homeFunctionMatches.length !== 1) {
+  throw new Error(`Expected one C3 home renderer, found ${homeFunctionMatches.length}.`);
+}
+const newHomeFunction = `const HOME_PHRASES = [
+  "creds to x8rr, thx goat!",
+  "jcyms is jail",
+  "just this once",
+  "I.H in academy 7th is goated.",
+];
+let homePhraseTimer = null;
+function renderHome() {
+  viewRoot.innerHTML = '<section class="home-landing" id="home" aria-labelledby="home-title"><h1 id="home-title">C<span>3</span></h1><footer class="home-footer" id="home-footer" aria-live="polite" aria-atomic="true"></footer></section>';
+  const footer = viewRoot.querySelector("#home-footer");
+  clearInterval(homePhraseTimer);
+  let phraseIndex = 0;
+  const showPhrase = () => {
+    if (!footer.isConnected) {
+      clearInterval(homePhraseTimer);
+      homePhraseTimer = null;
+      return;
+    }
+    footer.classList.remove("is-changing");
+    footer.textContent = HOME_PHRASES[phraseIndex];
+    void footer.offsetWidth;
+    footer.classList.add("is-changing");
+    phraseIndex = (phraseIndex + 1) % HOME_PHRASES.length;
+  };
+  showPhrase();
+  homePhraseTimer = window.setInterval(showPhrase, 4000);
+}`;
+appScript = replaceExactlyOnce(appScript, homeFunctionMatches[0][0], newHomeFunction, 'C3 landing page');
+const featureFunctions = `let animeQuery = "";
+let animeItems = [];
+let animeRequestId = 0;
+const browserBookmarks = [
+  { label: "Google", url: "https://www.google.com" },
+  { label: "YouTube", url: "https://www.youtube.com" },
+  { label: "Wikipedia", url: "https://www.wikipedia.org" },
+  { label: "GitHub", url: "https://github.com" },
+];
+
+function renderAnime() {
+  viewRoot.innerHTML = \`
+    \${sectionHeader("ANIME DISCOVERY", "Anime", "Search AniList for series, seasons, and official watch links.")}
+    <form id="anime-search" class="search-form anime-search"><input id="anime-query" type="search" value="\${escapeHTML(animeQuery)}" placeholder="Search anime..." aria-label="Search anime"><button class="button primary" type="submit">Search</button></form>
+    <p class="small-note anime-note">Catalog and metadata from AniList. Watch links open the services listed by AniList; episodes are not hosted here.</p>
+    <div id="anime-results" class="loading-state">Loading popular anime…</div>\`;
+  loadAnime(animeQuery);
+}
+
+async function loadAnime(query = "") {
+  animeQuery = query.trim();
+  const target = document.querySelector("#anime-results");
+  if (!target) return;
+  const requestId = ++animeRequestId;
+  target.innerHTML = \`<div class="loading-state">\${animeQuery ? "Searching AniList…" : "Loading popular anime…"}</div>\`;
+  try {
+    const sort = animeQuery ? "SEARCH_MATCH" : "POPULARITY_DESC";
+    const response = await fetch("https://graphql.anilist.co", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        query: \`query ($search: String) { Page(perPage: 24) { media(search: $search, type: ANIME, sort: \${sort}, isAdult: false) { id title { english romaji } coverImage { large } format episodes seasonYear status averageScore description siteUrl externalLinks { site url type } } } }\`,
+        variables: { search: animeQuery || null },
+      }),
+    });
+    if (!response.ok) throw new Error(\`AniList returned HTTP \${response.status}.\`);
+    const data = await response.json();
+    if (requestId !== animeRequestId) return;
+    if (data.errors?.length) throw new Error(data.errors[0].message || "AniList could not complete the search.");
+    animeItems = data.data?.Page?.media;
+    if (!Array.isArray(animeItems)) throw new Error("AniList returned an unsupported response.");
+    renderAnimeCards();
+  } catch (error) {
+    if (requestId !== animeRequestId) return;
+    renderServiceError(target, error, "Check your connection or try again later.");
+  }
+}
+
+function renderAnimeCards() {
+  const target = document.querySelector("#anime-results");
+  if (!target) return;
+  if (!animeItems.length) {
+    target.innerHTML = emptyState("No anime found", "Try another title.");
+    return;
+  }
+  target.innerHTML = \`<div class="card-grid anime-grid">\${animeItems.map((item) => {
+    const title = item.title?.english || item.title?.romaji || "Untitled";
+    const cover = item.coverImage?.large || "";
+    const details = [item.seasonYear, item.format?.replaceAll("_", " "), item.episodes ? \`\${item.episodes} episodes\` : ""].filter(Boolean).join(" · ");
+    const summary = String(item.description || "").replace(/<[^>]*>/g, " ").replace(/&nbsp;/gi, " ").replace(/\\s+/g, " ").trim().slice(0, 150);
+    const streamingLinks = (item.externalLinks || []).filter((link) => link.type === "STREAMING" && /^https?:\\/\\//i.test(link.url || ""));
+    const links = streamingLinks.slice(0, 2).map((link) => \`<a class="button small" href="\${escapeHTML(link.url)}" target="_blank" rel="noopener noreferrer">\${escapeHTML(link.site || "Watch")} ↗</a>\`).join("");
+    const aniListLink = /^https?:\\/\\//i.test(item.siteUrl || "") ? item.siteUrl : \`https://anilist.co/anime/\${encodeURIComponent(item.id)}\`;
+    return \`<article class="media-card anime-card">
+      <div class="media-art">\${cover ? \`<img src="\${escapeHTML(cover)}" alt="" loading="lazy" onerror="this.remove()">\` : '<span class="art-fallback">◈</span>'}</div>
+      <div class="media-card-body"><h3 title="\${escapeHTML(title)}">\${escapeHTML(title)}</h3><p>\${escapeHTML(details || item.status || "Anime")}</p>\${summary ? \`<p class="anime-summary">\${escapeHTML(summary)}</p>\` : ""}<div class="card-actions">\${links}<a class="button small primary" href="\${escapeHTML(aniListLink)}" target="_blank" rel="noopener noreferrer">Details ↗</a></div></div>
+    </article>\`;
+  }).join("")}</div>\`;
+}
+
+function renderBrowser() {
+  viewRoot.innerHTML = \`
+    \${sectionHeader("OPEN WEB", "Browser", "Open a website in a regular browser tab.")}
+    <section class="browser-panel">
+      <form id="browser-search" class="browser-address"><label for="browser-url">Website address</label><div><input id="browser-url" type="text" inputmode="url" autocomplete="url" placeholder="https://example.com" aria-label="Website address"><button class="button primary" type="submit">Open tab ↗</button></div></form>
+      <p class="small-note">This uses normal browser navigation; sites may block being embedded. No proxy or restriction-bypass service is used.</p>
+      <div class="browser-bookmarks" aria-label="Quick links">\${browserBookmarks.map((bookmark) => \`<a class="browser-bookmark" href="\${bookmark.url}" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↗</span>\${bookmark.label}</a>\`).join("")}</div>
+    </section>\`;
+}
+
+function openBrowserUrl(value) {
+  const input = String(value || "").trim();
+  if (!input) {
+    showToast("Enter a website address first.");
+    return;
+  }
+  let destination;
+  try {
+    destination = new URL(/^[a-z][a-z0-9+.-]*:/i.test(input) ? input : \`https://\${input}\`);
+  } catch {
+    showToast("Enter a valid website address.");
+    return;
+  }
+  if (!["http:", "https:"].includes(destination.protocol) || destination.username || destination.password) {
+    showToast("Only public HTTP and HTTPS addresses can be opened.");
+    return;
+  }
+  window.open(destination.href, "_blank", "noopener,noreferrer");
+}
+
+`;
+appScript = replaceExactlyOnce(appScript, 'function renderView() {', `${featureFunctions}function renderView() {`, 'Anime and Browser views');
+appScript = replaceExactlyOnce(
+  appScript,
+  `    case "manga": renderManga(); break;
+    case "music": renderMusic(); break;`,
+  `    case "manga": renderManga(); break;
+    case "anime": renderAnime(); break;
+    case "browser": renderBrowser(); break;
+    case "music": renderMusic(); break;`,
+  'Anime and Browser routing',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `  } else if (event.target.id === "settings-form") {
+    event.preventDefault();
+    const formData = new FormData(event.target);`,
+  `  } else if (event.target.id === "anime-search") {
+    event.preventDefault();
+    loadAnime(document.querySelector("#anime-query").value);
+  } else if (event.target.id === "browser-search") {
+    event.preventDefault();
+    openBrowserUrl(document.querySelector("#browser-url").value);
+  } else if (event.target.id === "settings-form") {
+    event.preventDefault();
+    const formData = new FormData(event.target);`,
+  'Anime and Browser form actions',
+);
+appScript = replaceExactlyOnce(
+  appScript,
+  `  } else if (state.view === "apps") {
+    const queryInput = document.querySelector("#apps-query");`,
+  `  } else if (state.view === "anime") {
+    clearTimeout(globalSearch.timer);
+    globalSearch.timer = setTimeout(() => loadAnime(input), 280);
+  } else if (state.view === "apps") {
+    const queryInput = document.querySelector("#apps-query");`,
+  'Anime global search',
+);
 const oldHlsFunction = `function loadHls() {
   if (window.Hls) return Promise.resolve();
   if (state.hlsPromise) return state.hlsPromise;
@@ -1276,7 +1559,857 @@ dialog {
   }
 }
 `;
-const bundledCss = `${css}\n${standaloneCss}`;
+const refinementCss = `
+:root {
+  --content-width: 1480px;
+  --surface-glass: #10141fd9;
+  --surface-stroke: #c4d0ff1b;
+  --accent: #aebeff;
+  --accent-2: #e89bd2;
+}
+
+html {
+  background: #080a10;
+}
+
+body {
+  isolation: isolate;
+  background:
+    radial-gradient(ellipse at 76% -16%, #7d71ff1c, transparent 43%),
+    radial-gradient(ellipse at 15% 112%, #e86fc90d, transparent 38%),
+    linear-gradient(145deg, #090b12, #080a10 58%, #0c0b13);
+}
+
+body::before {
+  z-index: 0;
+  background-image:
+    linear-gradient(#b7c5ff0b 1px, transparent 1px),
+    linear-gradient(90deg, #b7c5ff0b 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(180deg, #000 0%, #0009 58%, transparent 100%);
+  opacity: 0;
+  transition: opacity .45s ease;
+}
+
+body.grid-enabled::before {
+  opacity: .72;
+}
+
+body[data-theme="white"] {
+  background:
+    radial-gradient(ellipse at 76% -16%, #8d9df22b, transparent 43%),
+    radial-gradient(ellipse at 15% 112%, #d88acb1e, transparent 38%),
+    linear-gradient(145deg, #f8f9fd, #f1f3f9 58%, #f8f7fb);
+}
+
+body[data-theme="white"]::before {
+  background-image:
+    linear-gradient(#6674a016 1px, transparent 1px),
+    linear-gradient(90deg, #6674a016 1px, transparent 1px);
+  opacity: 0;
+}
+
+body[data-theme="white"].grid-enabled::before {
+  opacity: .62;
+}
+
+#particles-js {
+  z-index: 0;
+  opacity: 0;
+  transition: opacity .45s ease;
+}
+
+body.particles-enabled #particles-js {
+  opacity: 1;
+}
+
+#particles-js canvas {
+  opacity: .26;
+}
+
+body[data-theme="white"] #particles-js canvas {
+  opacity: .12;
+}
+
+#fog-effect {
+  z-index: 0;
+}
+
+body.fog-enabled #fog-effect {
+  opacity: .38;
+}
+
+body[data-theme="white"].fog-enabled #fog-effect {
+  opacity: .23;
+}
+
+#aurora-effect {
+  z-index: 0;
+  filter: blur(84px);
+}
+
+body.aurora-enabled #aurora-effect {
+  opacity: .24;
+}
+
+body[data-theme="white"].aurora-enabled #aurora-effect {
+  opacity: .19;
+}
+
+.app-shell {
+  z-index: 1;
+}
+
+.main-area {
+  column-gap: clamp(30px, 4vw, 62px);
+  padding: 26px clamp(24px, 4vw, 64px);
+}
+
+.topbar {
+  top: 26px;
+  gap: 23px;
+  padding: 22px 15px 15px;
+  border-color: var(--surface-stroke);
+  border-radius: 22px;
+  background:
+    radial-gradient(ellipse at 0 0, #879bff17, transparent 50%),
+    linear-gradient(180deg, #121725f2, #0c1019f5);
+  box-shadow: 0 28px 80px #0006, inset 0 1px #ffffff0b;
+}
+
+.brand {
+  padding: 4px 7px 12px;
+  font-size: 23px;
+  letter-spacing: -.075em;
+}
+
+.brand::after {
+  position: absolute;
+  top: 81px;
+  left: 22px;
+  color: #778097;
+  content: "YOUR SPACE · YOUR PACE";
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .15em;
+  pointer-events: none;
+}
+
+.brand-icon {
+  width: 39px;
+  height: 39px;
+  border-radius: 13px;
+}
+
+.main-nav {
+  gap: 7px;
+  padding-top: 17px;
+}
+
+.nav-item {
+  min-height: 45px;
+  border-radius: 13px;
+  font-size: 12px;
+  transition: background .18s ease, border-color .18s ease, transform .18s ease, color .18s ease;
+}
+
+.nav-item.active {
+  border-color: #d3dcff40;
+  background: linear-gradient(110deg, #aebeff, #d8b5e9 72%, #edb5dc);
+  box-shadow: 0 8px 22px #aebeff28, inset 0 1px #ffffff91;
+}
+
+.top-actions {
+  padding-top: 12px;
+}
+
+.global-search,
+.icon-button {
+  border-color: #c4d0ff20;
+  background: #090d17c9;
+}
+
+.view-root {
+  padding-top: 15px;
+}
+
+.hero {
+  min-height: clamp(330px, 36vw, 440px);
+  align-items: center;
+  padding: clamp(34px, 5vw, 66px);
+  border-color: #b1baff36;
+  border-radius: 28px;
+  background:
+    linear-gradient(90deg, #aebeff08 1px, transparent 1px),
+    linear-gradient(#aebeff08 1px, transparent 1px),
+    radial-gradient(ellipse at 83% 24%, #aaaaff30, transparent 35%),
+    radial-gradient(ellipse at 70% 100%, #e890cf22, transparent 39%),
+    linear-gradient(128deg, #171d30, #10131d 68%, #15111c);
+  background-size: 34px 34px, 34px 34px, auto, auto, auto;
+  box-shadow: inset 0 1px #ffffff12, 0 32px 90px #0005;
+}
+
+.hero::before {
+  position: absolute;
+  top: 50%;
+  right: 2%;
+  width: min(39vw, 430px);
+  aspect-ratio: 1;
+  transform: translateY(-50%);
+  border: 1px solid #c7caff30;
+  border-radius: 50%;
+  box-shadow: 0 0 0 22px #c7caff09, 0 0 0 54px #c7caff08, 0 0 0 91px #c7caff06;
+  content: "";
+  pointer-events: none;
+}
+
+.hero::after {
+  top: 50%;
+  right: calc(2% + min(39vw, 430px) / 2 - 67px);
+  width: 134px;
+  height: 134px;
+  transform: translateY(-50%);
+  border-color: #edbdff64;
+  box-shadow: 0 0 80px #aebeff1c, 0 0 0 14px #b8bdff0b, 0 0 0 36px #b8bdff08;
+}
+
+.hero-content {
+  max-width: 630px;
+}
+
+.hero h1 {
+  max-width: 620px;
+  font-size: clamp(48px, 6.1vw, 78px);
+  font-weight: 610;
+  letter-spacing: -.085em;
+  line-height: .96;
+}
+
+.hero p {
+  max-width: 470px;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.hero .button {
+  min-height: 44px;
+  padding: 0 19px;
+  border-radius: 12px;
+}
+
+.section-heading {
+  margin-top: 43px;
+  margin-bottom: 19px;
+}
+
+.section-heading h2 {
+  font-size: 21px;
+  font-weight: 630;
+  letter-spacing: -.045em;
+}
+
+.section-heading p {
+  font-size: 12px;
+}
+
+.feature-grid {
+  gap: 15px;
+}
+
+.feature-card {
+  min-height: 188px;
+  padding: 21px;
+  border-color: #c4d0ff1b;
+  border-radius: 19px;
+  background:
+    radial-gradient(ellipse at 100% 0, #aebeff10, transparent 54%),
+    linear-gradient(145deg, #151a28, #0d111a);
+  box-shadow: inset 0 1px #ffffff0a, 0 12px 30px #0002;
+}
+
+.feature-card:hover {
+  transform: translateY(-4px);
+  border-color: #b7c4ff55;
+  background:
+    radial-gradient(ellipse at 100% 0, #aebeff1a, transparent 54%),
+    linear-gradient(145deg, #1b2233, #10141f);
+  box-shadow: inset 0 1px #ffffff12, 0 18px 36px #0004;
+}
+
+.feature-card .feature-icon {
+  width: 42px;
+  height: 42px;
+  margin-bottom: 24px;
+  border-radius: 14px;
+}
+
+.feature-card h3 {
+  font-size: 15px;
+  letter-spacing: -.02em;
+}
+
+.feature-card p {
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.quick-launch {
+  margin-top: 40px;
+}
+
+.quick-apps {
+  gap: 11px;
+}
+
+.quick-app {
+  min-width: 104px;
+  min-height: 91px;
+  border-color: #c4d0ff18;
+  border-radius: 15px;
+  background: #111623a8;
+}
+
+.content-heading {
+  margin-bottom: 27px;
+}
+
+.content-heading h1 {
+  font-size: clamp(34px, 4.3vw, 49px);
+  font-weight: 630;
+  letter-spacing: -.075em;
+}
+
+.content-heading p {
+  max-width: 700px;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.toolbar {
+  gap: 12px;
+  margin: 22px 0;
+}
+
+.search-form input,
+.field input,
+.field select {
+  height: 44px;
+  border-color: #c4d0ff20;
+  border-radius: 12px;
+  background: #10141fc9;
+}
+
+.search-form .button,
+.toolbar > .pill {
+  border-radius: 12px;
+}
+
+.card-grid,
+.app-grid {
+  gap: 15px;
+}
+
+.media-card,
+.app-card {
+  border-color: #c4d0ff1c;
+  border-radius: 17px;
+  background: linear-gradient(145deg, #141927, #0e111a);
+  box-shadow: inset 0 1px #ffffff09, 0 12px 28px #0002;
+}
+
+.media-card:hover,
+.app-card:hover {
+  transform: translateY(-4px);
+  border-color: #b7c4ff56;
+  box-shadow: inset 0 1px #ffffff12, 0 18px 36px #0004;
+}
+
+.media-art {
+  background:
+    linear-gradient(90deg, #b7c4ff08 1px, transparent 1px),
+    linear-gradient(#b7c4ff08 1px, transparent 1px),
+    linear-gradient(135deg, #20263a, #111521);
+  background-size: 24px 24px, 24px 24px, auto;
+}
+
+.settings-card,
+.extension-banner,
+.notice {
+  border-color: #c4d0ff20;
+  border-radius: 19px;
+  background:
+    radial-gradient(ellipse at 100% 0, #aebeff0b, transparent 55%),
+    linear-gradient(150deg, #151a27f2, #10131cf5 76%);
+  box-shadow: inset 0 1px #ffffff0a, 0 15px 36px #0002;
+}
+
+.settings-card {
+  padding: 23px;
+}
+
+.settings-card h2 {
+  font-size: 17px;
+  letter-spacing: -.035em;
+}
+
+.settings-card > p,
+.small-note {
+  font-size: 11px;
+  line-height: 1.75;
+}
+
+.toggle-row {
+  min-height: 62px;
+}
+
+.toggle-row:hover strong {
+  color: #f4f5fb;
+}
+
+.button,
+.pill-tabs,
+.notice,
+.extension-banner,
+dialog {
+  border-radius: 14px;
+}
+
+.button.primary {
+  background: linear-gradient(112deg, #aebeff, #e6a9d8);
+  box-shadow: 0 8px 24px #aebeff28;
+}
+
+body[data-theme="white"] .topbar {
+  border-color: #36436c22;
+  background:
+    radial-gradient(ellipse at 0 0, #8d9df21b, transparent 50%),
+    linear-gradient(180deg, #ffffffed, #f6f7fcf5);
+  box-shadow: 0 28px 70px #28345a18, inset 0 1px #ffffff;
+}
+
+body[data-theme="white"] .brand::after {
+  color: #6c7283;
+}
+
+body[data-theme="white"] .nav-item.active {
+  background: linear-gradient(110deg, #c2ceff, #ecc1e0);
+}
+
+body[data-theme="white"] .hero {
+  border-color: #6878b735;
+  background:
+    linear-gradient(90deg, #5969b80b 1px, transparent 1px),
+    linear-gradient(#5969b80b 1px, transparent 1px),
+    radial-gradient(ellipse at 83% 24%, #aaaaff38, transparent 35%),
+    radial-gradient(ellipse at 70% 100%, #e890cf2c, transparent 39%),
+    linear-gradient(128deg, #ffffff, #eef0f9 68%, #f8f2fa);
+  background-size: 34px 34px, 34px 34px, auto, auto, auto;
+  box-shadow: inset 0 1px #ffffff, 0 32px 90px #28345a17;
+}
+
+body[data-theme="white"] .hero::before {
+  border-color: #6674a034;
+  box-shadow: 0 0 0 22px #6674a00b, 0 0 0 54px #6674a009, 0 0 0 91px #6674a007;
+}
+
+body[data-theme="white"] .feature-card,
+body[data-theme="white"] .settings-card,
+body[data-theme="white"] .app-card,
+body[data-theme="white"] .media-card,
+body[data-theme="white"] .extension-banner {
+  border-color: #34406420;
+  background:
+    radial-gradient(ellipse at 100% 0, #7185d70b, transparent 54%),
+    linear-gradient(145deg, #ffffff, #f2f4fa);
+  box-shadow: inset 0 1px #ffffff, 0 12px 30px #28345a0a;
+}
+
+body[data-theme="white"] .feature-card:hover,
+body[data-theme="white"] .app-card:hover,
+body[data-theme="white"] .media-card:hover {
+  border-color: #6878b75c;
+  box-shadow: inset 0 1px #ffffff, 0 18px 36px #28345a18;
+}
+
+body[data-theme="white"] .settings-card h2,
+body[data-theme="white"] .feature-card h3 {
+  color: #171a24;
+}
+
+@media (max-width: 1020px) {
+  .topbar {
+    padding: 8px 12px 7px;
+  }
+
+  .brand::after {
+    display: none;
+  }
+
+  .main-nav {
+    padding-top: 0;
+  }
+
+  .top-actions {
+    padding-top: 0;
+  }
+
+  .hero {
+    min-height: 330px;
+  }
+}
+
+@media (max-width: 650px) {
+  .hero {
+    min-height: 300px;
+    padding: 27px 22px;
+  }
+
+  .hero h1 {
+    font-size: clamp(43px, 12vw, 60px);
+  }
+
+  .hero::before {
+    right: -28%;
+    width: 74vw;
+    opacity: .7;
+  }
+
+  .hero::after {
+    right: calc(-28% + 37vw - 67px);
+  }
+
+  .feature-card {
+    min-height: 155px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  #particles-js {
+    transition: none;
+  }
+}
+`;
+const themeCompatibilityCss = `
+body[data-theme="c3"] {
+  color-scheme: dark;
+  --bg: #0b0a0d;
+  --bg-2: #121115;
+  --bg-3: #19181d;
+  --bg-4: #242128;
+  --bg-5: #08070a;
+  --border: #ff4fa329;
+  --border-2: #ff4fa31f;
+  --border-3: #ff4fa314;
+  --border-4: #ff4fa30b;
+  --text: #b5b1bc;
+  --bright-text: #f4f1f6;
+  --accent: #ff4fa3;
+  --accent-2: #d953a3;
+}
+${['black', 'white', ...supportedThemes, 'c3'].map((theme) => `
+body[data-theme="${theme}"] {
+  --app-background: var(--bg);
+  --panel: var(--bg-2);
+  --panel-raised: var(--bg-3);
+  --panel-hover: var(--bg-4);
+  --line: var(--border-4);
+  --white: var(--bright-text);
+  --muted: var(--text);
+  --pink: var(--accent);
+  --pink-light: color-mix(in srgb, var(--accent) 68%, white);
+}`).join('\n')}
+body[data-theme]:not([data-theme="white"]) {
+  background:
+    radial-gradient(ellipse at 76% -16%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 43%),
+    radial-gradient(ellipse at 15% 112%, color-mix(in srgb, var(--accent-2) 8%, transparent), transparent 38%),
+    linear-gradient(145deg, var(--bg), color-mix(in srgb, var(--bg) 88%, #05060a) 58%, var(--bg-5));
+  color: var(--bright-text);
+}
+body[data-theme]:not([data-theme="white"])::before {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--accent) 8%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, transparent) 1px, transparent 1px);
+}
+body[data-theme]:not([data-theme="white"]) .topbar {
+  border-color: color-mix(in srgb, var(--accent) 13%, transparent);
+  background:
+    radial-gradient(ellipse at 0 0, color-mix(in srgb, var(--accent) 9%, transparent), transparent 48%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-2) 96%, transparent), color-mix(in srgb, var(--bg) 96%, transparent));
+}
+body[data-theme]:not([data-theme="white"]) .brand-pink {
+  color: var(--accent);
+}
+body[data-theme]:not([data-theme="white"]) .nav-item {
+  color: var(--text);
+}
+body[data-theme]:not([data-theme="white"]) .nav-item:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--bright-text);
+}
+body[data-theme]:not([data-theme="white"]) .nav-item.active {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: linear-gradient(110deg, var(--accent), color-mix(in srgb, var(--accent-2) 70%, var(--accent)));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 18%, transparent), inset 0 1px #ffffff66;
+  color: var(--bg);
+}
+body[data-theme]:not([data-theme="white"]) .nav-item.active .lucide-icon {
+  color: var(--bg);
+}
+body[data-theme]:not([data-theme="white"]) .global-search,
+body[data-theme]:not([data-theme="white"]) .icon-button,
+body[data-theme]:not([data-theme="white"]) .search-form input,
+body[data-theme]:not([data-theme="white"]) .field input,
+body[data-theme]:not([data-theme="white"]) .field select,
+body[data-theme]:not([data-theme="white"]) .pill-tabs {
+  border-color: var(--border-2);
+  background: var(--bg-5);
+  color: var(--bright-text);
+}
+body[data-theme]:not([data-theme="white"]) .global-search input,
+body[data-theme]:not([data-theme="white"]) .search-form input,
+body[data-theme]:not([data-theme="white"]) .field input,
+body[data-theme]:not([data-theme="white"]) .field select {
+  color: var(--bright-text);
+}
+body[data-theme]:not([data-theme="white"]) .hero {
+  border-color: color-mix(in srgb, var(--accent) 26%, transparent);
+  background:
+    radial-gradient(ellipse at 83% 24%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 35%),
+    radial-gradient(ellipse at 70% 100%, color-mix(in srgb, var(--accent-2) 13%, transparent), transparent 39%),
+    linear-gradient(128deg, var(--bg-2), var(--bg) 68%, var(--bg-5));
+}
+body[data-theme]:not([data-theme="white"]) .button {
+  border-color: var(--border);
+  background: var(--bg-3);
+  color: var(--bright-text);
+}
+body[data-theme]:not([data-theme="white"]) .button.primary {
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  background: linear-gradient(110deg, var(--accent), var(--accent-2));
+  color: var(--bg);
+}
+`;
+const landingCss = `
+.home-landing {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  min-height: min(74vh, 760px);
+  place-content: center;
+  justify-items: center;
+  gap: clamp(18px, 3vh, 28px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 28px;
+  background:
+    radial-gradient(ellipse at 50% 44%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 48%),
+    linear-gradient(145deg, color-mix(in srgb, var(--bg-2) 94%, transparent), var(--bg));
+  box-shadow: inset 0 1px #ffffff0a, 0 28px 80px #0004;
+  text-align: center;
+}
+.home-landing::before,
+.home-landing::after {
+  position: absolute;
+  z-index: -1;
+  top: 50%;
+  left: 50%;
+  width: min(72vw, 560px);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+}
+.home-landing::after {
+  width: min(56vw, 430px);
+  border-color: color-mix(in srgb, var(--accent-2) 13%, transparent);
+}
+.home-landing h1 {
+  margin: 0;
+  color: var(--bright-text);
+  font-size: clamp(92px, 19vw, 220px);
+  font-weight: 760;
+  letter-spacing: -.12em;
+  line-height: .82;
+  text-shadow: 0 10px 60px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.home-landing h1 span {
+  color: var(--accent);
+}
+.home-footer {
+  max-width: min(80vw, 560px);
+  min-height: 1.6em;
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(14px, 1.7vw, 18px);
+  font-weight: 500;
+  letter-spacing: .015em;
+  line-height: 1.6;
+}
+.home-footer.is-changing {
+  animation: home-phrase-in .45s ease both;
+}
+.content-heading {
+  margin-bottom: 27px;
+}
+.content-heading h1 {
+  font-size: clamp(32px, 4.5vw, 48px);
+  letter-spacing: -.075em;
+}
+.content-heading p {
+  max-width: 720px;
+  font-size: 13px;
+}
+.card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 17px;
+}
+.media-card {
+  border-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 17px;
+  background: linear-gradient(155deg, color-mix(in srgb, var(--bg-2) 96%, transparent), var(--bg));
+  box-shadow: inset 0 1px #ffffff08, 0 9px 24px #0002;
+}
+.media-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  box-shadow: inset 0 1px #ffffff12, 0 15px 34px #0003;
+}
+.media-art {
+  aspect-ratio: 1.5;
+  background: linear-gradient(145deg, var(--bg-3), var(--bg-5));
+}
+.anime-card .media-art {
+  aspect-ratio: 2 / 3;
+}
+.media-card-body {
+  padding: 14px;
+}
+.media-card h3 {
+  color: var(--bright-text);
+  font-size: 13px;
+}
+.media-card p {
+  color: var(--text);
+}
+.anime-card .anime-summary {
+  display: -webkit-box;
+  min-height: 4.5em;
+  margin-top: 9px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.media-card .card-actions {
+  flex-wrap: wrap;
+}
+.browser-panel {
+  padding: clamp(20px, 4vw, 36px);
+  border: 1px solid color-mix(in srgb, var(--accent) 19%, transparent);
+  border-radius: 20px;
+  background:
+    radial-gradient(ellipse at 100% 0, color-mix(in srgb, var(--accent) 9%, transparent), transparent 42%),
+    linear-gradient(145deg, var(--bg-2), var(--bg));
+  box-shadow: inset 0 1px #ffffff0b, 0 20px 55px #0003;
+}
+.browser-address {
+  display: grid;
+  width: 100%;
+  gap: 9px;
+}
+.browser-address label {
+  color: var(--bright-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.browser-address > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.browser-address input {
+  min-width: min(240px, 100%);
+  height: 46px;
+  flex: 1;
+  padding: 0 14px;
+  border: 1px solid var(--border-2);
+  border-radius: 12px;
+  background: var(--bg-5);
+  color: var(--bright-text);
+}
+.browser-address .button {
+  min-height: 46px;
+  border-radius: 12px;
+}
+.browser-panel > .small-note {
+  margin: 15px 0 0;
+}
+.browser-bookmarks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-top: 26px;
+}
+.browser-bookmark {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--border-2);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg-3) 68%, transparent);
+  color: var(--bright-text);
+  font-size: 12px;
+  font-weight: 600;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease;
+}
+.browser-bookmark:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--bg-3);
+}
+.browser-bookmark span {
+  color: var(--accent);
+}
+.game-loading {
+  margin: 12px 0;
+  color: var(--text);
+  font-size: 12px;
+}
+.game-loading[hidden] {
+  display: none;
+}
+@keyframes home-phrase-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (max-width: 650px) {
+  .home-landing {
+    min-height: min(68vh, 620px);
+    border-radius: 22px;
+  }
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 11px;
+  }
+  .media-card-body {
+    padding: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-footer.is-changing {
+    animation: none;
+  }
+}
+`;
+const bundledCss = `${css}\n${standaloneCss}\n${refinementCss}\n${themeCompatibilityCss}\n${landingCss}`;
 html = html.replace(/<link id="theme-stylesheet"[^>]*>\s*/i, '');
 html = html.replace(/<link rel="stylesheet" href="style\.css">\s*/i, `<style>\n${bundledCss}\n</style>\n`);
 html = html.replace(/<link rel="stylesheet" href="assets\/css\/effects\.css">\s*/i, '');
